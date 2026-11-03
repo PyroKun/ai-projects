@@ -1,15 +1,26 @@
 import streamlit as st
 import requests
+import os
+from langchain_community.embeddings import FastEmbedEmbeddings
+from langchain_community.vectorstores import FAISS
 
-st.set_page_config(page_title="我的 AI 知识库", page_icon="🤖")
+st.set_page_config(page_title="AI 知识库", page_icon="🤖")
 st.title("🤖 企业内部知识库助手")
 
-# 🌟 新增：左侧边栏，用于上传文件
-with st.sidebar:
-    st.header("📂 上传你的知识库")
-    uploaded_file = st.file_uploader("上传一个 TXT 文件", type=["txt"])
-    if uploaded_file is not None:
-        st.success("文件已加载！")
+# 🌟 关键：从 Streamlit 云端读取密钥
+try:
+    DEEPSEEK_API_KEY = st.secrets["DEEPSEEK_API_KEY"]
+except Exception:
+    st.error("未配置 API Key，请在 Streamlit 后台设置。")
+    st.stop()
+
+# 加载向量库 (确保 faiss_index 文件夹和 ui.py 在同一个目录)
+@st.cache_resource
+def load_vectorstore():
+    embeddings = FastEmbedEmbeddings()
+    return FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
+
+vectorstore = load_vectorstore()
 
 # 初始化聊天记录
 if "messages" not in st.session_state:
@@ -26,25 +37,18 @@ if prompt := st.chat_input("请输入你的问题..."):
 
     with st.chat_message("assistant"):
         with st.spinner("AI 正在查阅资料..."):
-            try:
-                # 🌟 新增：读取上传文件的内容
-                document_content = ""
-                if uploaded_file is not None:
-                    document_content = uploaded_file.read().decode("utf-8")
-                
-                # 发给后端
-                response = requests.post(
-                    "http://127.0.0.1:8080/ask",
-                    json={"question": prompt, "document_text": document_content},
-                    timeout=30
-                )
-                
-                if response.status_code == 200:
-                    data = response.json()
-                    st.markdown(data["answer"])
-                    st.caption(f"📚 引用资料：{data['source']}")
-                    st.session_state.messages.append({"role": "assistant", "content": data["answer"]})
-                else:
-                    st.error(f"接口报错，状态码：{response.status_code}")
-            except Exception as e:
-                st.error(f"连接失败：{e}")
+            # 1. 检索
+            docs = vectorstore.similarity_search(prompt, k=1)
+            best_chunk = docs[0].page_content
+            
+            # 2. 调大模型
+            url = "https://api.deepseek.com/chat/completions"
+            headers = {"Authorization": f"Bearer {DEEPSEEK_API_KEY}"}
+            data = {"model": "deepseek-chat", "messages": [{"role": "user", "content": f"根据资料回答：{best_chunk}\n问题：{prompt}"}]}
+            
+            res = requests.post(url, headers=headers, json=data)
+            answer = res.json()["choices"][0]["message"]["content"]
+            
+            st.markdown(answer)
+            st.caption(f"📚 引用资料：{best_chunk}")
+            st.session_state.messages.append({"role": "assistant", "content": answer})
