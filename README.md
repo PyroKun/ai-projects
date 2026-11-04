@@ -21,3 +21,8 @@
 ```bash
 git clone https://github.com/ProKun/ai-projects.git
 cd ai-projects/11-zero-base
+
+## 🌐 在线体验 (Live Demo)
+👉 **点击这里直接体验：** [https://ai-projects-r8wreetahdybf88egptnzh.streamlit.app/](https://ai-projects-r8wreetahdybf88egptnzh.streamlit.app/)
+
+*(注：请体验“年假有几天？”、“病假工资怎么发？”等内部制度问答。)*
