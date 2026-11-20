@@ -1,0 +1,112 @@
+import streamlit as st
+import requests
+import os
+import json
+import sqlite3
+import pandas as pd
+from dotenv import load_dotenv
+
+load_dotenv(dotenv_path="../.env")
+API_KEY = os.getenv("DEEPSEEK_API_KEY")
+
+st.set_page_config(page_title="企业智能销售系统", page_icon="💼", layout="wide")
+st.title("💼 企业智能销售与 CRM 管理")
+
+# 使用 Tabs 分屏展示
+tab1, tab2 = st.tabs(["💬 智能销售助手 (客户端)", "📊 CRM 客户管理 (销售后台)"])
+
+# ================= 界面 1：智能销售助手 =================
+with tab1:
+    st.subheader("与 AI 销售助理对话")
+    
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+        
+    # 展示历史记录
+    for msg in st.session_state.chat_history:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    # 用户输入
+    if prompt := st.chat_input("客户请在此输入需求（例如：你好，我是XX公司的采购...）"):
+        st.session_state.chat_history.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        # 1. AI 回复（模拟销售话术）
+                # 1. AI 回复（智能追问版）
+        with st.chat_message("assistant"):
+            with st.spinner("AI 正在回复..."):
+                url = "https://api.deepseek.com/chat/completions"
+                headers = {"Authorization": f"Bearer {API_KEY}"}
+                
+                # 🌟 升级 System Prompt，让它学会追问
+                messages = [
+                    {"role": "system", "content": "你是一个专业的AI销售。你的任务是：1. 热情回答客户问题；2. 务必想尽办法获取客户的公司名称、称呼和具体需求。如果客户没说全，请务必在回答后自然地追问（例如：'方便留一下您的公司和称呼吗？'）。"}
+                ]
+                for m in st.session_state.chat_history[-4:]:
+                    messages.append(m)
+                    
+                data = {"model": "deepseek-chat", "messages": messages}
+                res = requests.post(url, headers=headers, json=data).json()
+                answer = res["choices"][0]["message"]["content"]
+                
+                st.markdown(answer)
+                st.session_state.chat_history.append({"role": "assistant", "content": answer})
+                
+                # ================= 后台静默提取与跟进建议 =================
+                extract_prompt = f"""
+                从以下对话中提取客户信息。如果某个信息未提及，填"未知"。
+                严格输出 JSON 格式，字段包括：name, company, intent_level (高/中/低), requirement, follow_up_status (填"未联系")。
+                对话内容：{prompt}
+                """
+                extract_data = {
+                    "model": "deepseek-chat", 
+                    "messages": [{"role": "user", "content": extract_prompt}],
+                    "response_format": {"type": "json_object"}
+                }
+                extract_res = requests.post(url, headers=headers, json=extract_data).json()
+                
+                try:
+                    customer_info = json.loads(extract_res["choices"][0]["message"]["content"])
+                    
+                    # 只有提取到了姓名或公司，才入库
+                    if customer_info.get("name") != "未知" or customer_info.get("company") != "未知":
+                        # 1. 入库
+                        conn = sqlite3.connect('crm_customers.db')
+                        cursor = conn.cursor()
+                        cursor.execute('''
+                        INSERT INTO customers (name, company, intent_level, requirement, follow_up_status)
+                        VALUES (?, ?, ?, ?, ?)
+                        ''', (customer_info.get("name"), customer_info.get("company"), customer_info.get("intent_level"), customer_info.get("requirement"), "未联系"))
+                        conn.commit()
+                        conn.close()
+                        st.toast("✅ 后台已自动将客户信息录入 CRM 数据库！", icon="🚀")
+                        
+                        # 🌟 新增：让 AI 生成一条给销售人员的“跟进建议”
+                        suggest_prompt = f"客户信息：{json.dumps(customer_info, ensure_ascii=False)}。请给销售员写一段50字以内的跟进建议。"
+                        suggest_data = {"model": "deepseek-chat", "messages": [{"role": "user", "content": suggest_prompt}]}
+                        suggest_res = requests.post(url, headers=headers, json=suggest_data).json()
+                        suggestion = suggest_res["choices"][0]["message"]["content"]
+                        
+                        st.info(f"💡 **销售跟进建议**：{suggestion}")
+                        
+                except Exception as e:
+                    pass # 提取失败不报错，保持静默
+
+# ================= 界面 2：CRM 客户管理 =================
+with tab2:
+    st.subheader("最新客户线索")
+    
+    if st.button("🔄 刷新客户列表"):
+        st.rerun()
+        
+    # 从数据库读取数据
+    conn = sqlite3.connect('crm_customers.db')
+    df = pd.read_sql_query("SELECT id, name, company, intent_level, requirement, follow_up_status, create_time FROM customers ORDER BY id DESC", conn)
+    conn.close()
+    
+    if not df.empty:
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.info("目前暂无客户数据，请去左侧与 AI 聊天。")
