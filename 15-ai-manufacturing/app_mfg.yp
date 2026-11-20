@@ -1,0 +1,113 @@
+import streamlit as st
+import requests
+import os
+import sqlite3
+import pandas as pd
+from dotenv import load_dotenv
+from pypdf import PdfReader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import FastEmbedEmbeddings
+from langchain_community.vectorstores import FAISS
+
+load_dotenv(dotenv_path="../.env")
+API_KEY = os.getenv("DEEPSEEK_API_KEY")
+
+st.set_page_config(page_title="AI 工业售后助手", page_icon="🏭", layout="wide")
+st.title("🏭 智能制造质检与售后助手")
+
+# --- 初始化售后工单数据库 ---
+conn = sqlite3.connect('maintenance_tickets.db')
+cursor = conn.cursor()
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS tickets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    equipment_model TEXT,
+    error_code TEXT,
+    issue_desc TEXT,
+    solution TEXT,
+    status TEXT DEFAULT '待处理',
+    create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+''')
+conn.commit()
+
+# --- 加载设备手册并建立临时向量库 ---
+@st.cache_resource
+def load_manual():
+    with open("equipment_manual.txt", "r", encoding="utf-8") as f:
+        text = f.read()
+    text_splitter = RecursiveCharacterTextSplitter(chunk_size=200, chunk_overlap=20)
+    chunks = text_splitter.split_text(text)
+    embeddings = FastEmbedEmbeddings()
+    return FAISS.from_texts(chunks, embeddings)
+
+vectorstore = load_manual()
+
+# --- 页面分为两个 Tab ---
+tab1, tab2 = st.tabs(["🔧 智能售后排障 (报修端)", "📋 售后工单管理 (后台端)"])
+
+with tab1:
+    st.subheader("输入设备故障现象")
+    issue_input = st.text_area("请描述故障现象或报错代码（如：YAG-300 机器报 E01，水温很高）")
+    
+    if st.button("🚀 生成维修方案并建单"):
+        if issue_input:
+            with st.spinner("AI 正在检索设备手册并制定维修方案..."):
+                # 1. RAG 检索相关手册段落
+                docs = vectorstore.similarity_search(issue_input, k=2)
+                context = "\n".join([d.page_content for d in docs])
+                
+                # 2. 让大模型生成工单内容和维修方案
+                prompt = f"""
+                你是一个工业售后专家。请根据以下【设备手册资料】和客户的【故障描述】，生成维修方案。
+                请严格输出 JSON 格式，包含字段：
+                - equipment_model: 设备型号
+                - error_code: 报错代码（如果没有写"无"）
+                - solution: 详细的维修步骤和解决方案
+                
+                【设备手册资料】：{context}
+                【故障描述】：{issue_input}
+                """
+                
+                url = "https://api.deepseek.com/chat/completions"
+                headers = {"Authorization": f"Bearer {API_KEY}"}
+                data = {
+                    "model": "deepseek-chat",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "response_format": {"type": "json_object"}
+                }
+                
+                res = requests.post(url, headers=headers, json=data).json()
+                result = res["choices"][0]["message"]["content"]
+                
+                try:
+                    import json
+                    result_json = json.loads(result)
+                    
+                    # 3. 将维修方案存入数据库工单
+                    cursor.execute('''
+                    INSERT INTO tickets (equipment_model, error_code, issue_desc, solution)
+                    VALUES (?, ?, ?, ?)
+                    ''', (result_json.get("equipment_model"), result_json.get("error_code"), issue_input, result_json.get("solution")))
+                    conn.commit()
+                    
+                    st.success("✅ 维修方案生成成功，并已自动创建售后工单！")
+                    st.info(f"**维修方案**：\n{result_json.get('solution')}")
+                    
+                except Exception as e:
+                    st.error(f"解析失败：{e}")
+        else:
+            st.warning("请输入故障描述！")
+
+with tab2:
+    st.subheader("历史售后工单")
+    if st.button("🔄 刷新工单"):
+        st.rerun()
+        
+    df = pd.read_sql_query("SELECT * FROM tickets ORDER BY id DESC", conn)
+    if not df.empty:
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.info("暂无工单记录。")
+        
+conn.close()
