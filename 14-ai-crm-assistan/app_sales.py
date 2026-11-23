@@ -11,21 +11,31 @@ API_KEY = os.getenv("DEEPSEEK_API_KEY")
 
 st.set_page_config(page_title="全链路智能销售CRM", page_icon="💼", layout="wide")
 
-# 顶部指标看板（每次加载更新数据）
+# 🌟 核心修复：先建表，再查数据！
 conn = sqlite3.connect('crm_customers.db')
 cursor = conn.cursor()
-# 自动升级一下数据库结构（加入更新时间的机制）
-try:
-    cursor.execute("ALTER TABLE customers ADD COLUMN update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-    conn.commit()
-except:
-    pass # 已经存在则跳过
+cursor.execute('''
+CREATE TABLE IF NOT EXISTS customers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT,
+    company TEXT,
+    intent_level TEXT,
+    requirement TEXT,
+    follow_up_status TEXT,
+    create_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+)
+''')
+conn.commit()
 
+# 然后再查数据
 total_leads = pd.read_sql_query("SELECT count(*) as count FROM customers", conn)['count'][0]
 high_intent = pd.read_sql_query("SELECT count(*) as count FROM customers WHERE intent_level='高'", conn)['count'][0]
 today_new = pd.read_sql_query("SELECT count(*) as count FROM customers WHERE date(create_time)=date('now')", conn)['count'][0]
 conn.close()
 
+# 渲染顶部看板
+st.title("💼 智能销售 CRM 管理系统")
+# ... 下面的代码保持不变 ...
 # 渲染顶部看板
 st.title("💼 智能销售 CRM 管理系统")
 col1, col2, col3 = st.columns(3)
