@@ -33,7 +33,11 @@ conn.close()
 
 @st.cache_resource
 def load_manual():
-    with open("equipment_manual.txt", "r", encoding="utf-8") as f:
+    # 🌟 关键修复：动态获取当前脚本所在目录，再拼上文件名
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(current_dir, "equipment_manual.txt")
+    
+    with open(file_path, "r", encoding="utf-8") as f:
         text = f.read()
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=200, chunk_overlap=20)
     return FAISS.from_texts(text_splitter.split_text(text), FastEmbedEmbeddings())
